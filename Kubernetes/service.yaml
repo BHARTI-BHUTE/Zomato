@@ -9,6 +9,6 @@ spec:
   ports:
   - port: 3000
     targetPort: 3000
-    nodePort: 30002
+    nodePort: 30003
   selector:
     app: zomato
