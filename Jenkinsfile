@@ -66,7 +66,7 @@ pipeline {
                     kubectl apply -f Kubernetes/deployment.yaml \
                         -n staging
 
-                    kubectl apply -f Kubernetes/service.yaml \
+                    kubectl apply -f Kubernetes/service-staging.yaml \
                         -n staging
 
                     kubectl set image deployment/zomato \
@@ -105,7 +105,7 @@ pipeline {
                     kubectl apply -f Kubernetes/deployment.yaml \
                         -n production
 
-                    kubectl apply -f Kubernetes/service.yaml \
+                    kubectl apply -f Kubernetes/service-production.yaml \
                         -n production
 
                     kubectl set image deployment/zomato \
@@ -140,6 +140,7 @@ pipeline {
     }
 
     post {
+
         success {
             echo "Zomato CI/CD Pipeline completed successfully."
             echo "Docker Image: ${ECR_IMAGE}"
