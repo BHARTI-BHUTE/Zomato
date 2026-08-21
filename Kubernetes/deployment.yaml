@@ -19,3 +19,8 @@ spec:
         image: kastrov/zomato:latest
         ports:
         - containerPort: 3000
+        resources:
+          requests:
+            cpu: 100m
+          limits:
+            cpu: 500m

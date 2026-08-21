@@ -1,108 +1,152 @@
 pipeline {
+
     agent any
-    tools {
-        jdk 'jdk17'
-        nodejs 'node23'
-    }
+
     environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+        AWS_REGION = 'ap-south-1'
+        ECR_REGISTRY = '093366266423.dkr.ecr.ap-south-1.amazonaws.com'
+        ECR_REPOSITORY = 'zomato'
+        ECR_IMAGE = "${ECR_REGISTRY}/${ECR_REPOSITORY}:${BUILD_NUMBER}"
+        EKS_CLUSTER = 'zomato-eks'
     }
+
     stages {
-        stage ("clean workspace") {
+
+        stage('Checkout') {
             steps {
-                cleanWs()
+                git branch: 'master',
+                    url: 'https://github.com/BHARTI-BHUTE/Zomato.git'
             }
         }
-        stage ("Git Checkout") {
+
+        stage('Build Application') {
             steps {
-                git 'https://github.com/KastroVKiran/Zomato-Project-Kastro.git'
+                sh '''
+                    node --version
+                    npm --version
+                    npm install
+                    npm run build
+                '''
             }
         }
-        stage("Sonarqube Analysis"){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
-                    -Dsonar.projectKey=zomato '''
-                }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build -t ${ECR_IMAGE} .
+                    docker images
+                '''
             }
         }
-        stage("Code Quality Gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
-                }
-            } 
-        }
-        stage("Install NPM Dependencies") {
+
+        stage('ECR Login') {
             steps {
-                sh "npm install"
+                sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                    docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                '''
             }
         }
-        stage('OWASP FS SCAN') {
+
+        stage('Push Image to ECR') {
             steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                sh '''
+                    docker push ${ECR_IMAGE}
+                '''
+            }
+        }
+
+        stage('Deploy Staging') {
+            steps {
+                sh '''
+                    aws eks update-kubeconfig \
+                        --region ${AWS_REGION} \
+                        --name ${EKS_CLUSTER}
+
+                    kubectl apply -f Kubernetes/deployment.yaml \
+                        -n staging
+
+                    kubectl apply -f Kubernetes/service.yaml \
+                        -n staging
+
+                    kubectl set image deployment/zomato \
+                        zomato=${ECR_IMAGE} \
+                        -n staging
+
+                    kubectl rollout status deployment/zomato \
+                        -n staging \
+                        --timeout=300s
+                '''
+            }
+        }
+
+        stage('Validate Staging') {
+            steps {
+                sh '''
+                    echo "===== STAGING PODS ====="
+                    kubectl get pods -n staging
+
+                    echo "===== STAGING DEPLOYMENT ====="
+                    kubectl get deployment -n staging
+
+                    echo "===== STAGING SERVICE ====="
+                    kubectl get svc -n staging
+
+                    kubectl rollout status deployment/zomato \
+                        -n staging \
+                        --timeout=300s
+                '''
+            }
+        }
+
+        stage('Deploy Production') {
+            steps {
+                sh '''
+                    kubectl apply -f Kubernetes/deployment.yaml \
+                        -n production
+
+                    kubectl apply -f Kubernetes/service.yaml \
+                        -n production
+
+                    kubectl set image deployment/zomato \
+                        zomato=${ECR_IMAGE} \
+                        -n production
+
+                    kubectl rollout status deployment/zomato \
+                        -n production \
+                        --timeout=300s
+                '''
+            }
+        }
+
+        stage('Production Validation') {
+            steps {
+                sh '''
+                    echo "===== PRODUCTION PODS ====="
+                    kubectl get pods -n production
+
+                    echo "===== PRODUCTION DEPLOYMENT ====="
+                    kubectl get deployment -n production
+
+                    echo "===== PRODUCTION SERVICE ====="
+                    kubectl get svc -n production
+
+                    kubectl rollout status deployment/zomato \
+                        -n production \
+                        --timeout=300s
+                '''
+            }
+        }
     }
-}
-        stage ("Trivy File Scan") {
-            steps {
-                sh "trivy fs . > trivy.txt"
-            }
-        }
-        stage ("Build Docker Image") {
-            steps {
-                sh "docker build -t zomato ."
-            }
-        }
-        stage ("Tag & Push to DockerHub") {
-            steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker') {
-                        sh "docker tag zomato kastrov/zomato:latest "
-                        sh "docker push kastrov/zomato:latest "
-                    }
-                }
-            }
-        }
-        stage('Docker Scout Image') {
-            steps {
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh 'docker-scout quickview kastrov/zomato:latest'
-                       sh 'docker-scout cves kastrov/zomato:latest'
-                       sh 'docker-scout recommendations kastrov/zomato:latest'
-                   }
-                }
-            }
-        }
-        stage ("Deploy to Container") {
-            steps {
-                sh 'docker run -d --name zomato -p 3000:3000 kastrov/zomato:latest'
-            }
-        }
-    }
+
     post {
-    always {
-        emailext attachLog: true,
-            subject: "'${currentBuild.result}'",
-            body: """
-                <html>
-                <body>
-                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                    </div>
-                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                    </div>
-                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
-                    </div>
-                </body>
-                </html>
-            """,
-            to: 'kastrokiran@gmail.com',
-            mimeType: 'text/html',
-            attachmentsPattern: 'trivy.txt'
+        success {
+            echo "Zomato CI/CD Pipeline completed successfully."
+            echo "Docker Image: ${ECR_IMAGE}"
+        }
+
+        failure {
+            echo "Zomato CI/CD Pipeline failed."
         }
     }
 }
